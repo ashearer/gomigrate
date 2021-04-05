@@ -5,10 +5,9 @@ package gomigrate
 import (
 	"database/sql"
 	"errors"
-	"io/ioutil"
+	"io/fs"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 )
 
@@ -29,11 +28,11 @@ var (
 )
 
 type Migrator struct {
-	DB             *sql.DB
-	MigrationsPath string
-	dbAdapter      Migratable
-	migrations     map[uint64]*Migration
-	logger         Logger
+	DB         *sql.DB
+	fs         fs.FS
+	dbAdapter  Migratable
+	migrations map[uint64]*Migration
+	logger     Logger
 }
 
 type Logger interface {
@@ -73,24 +72,15 @@ func (m *Migrator) CreateMigrationsTable() error {
 }
 
 // Returns a new migrator.
-func NewMigrator(db *sql.DB, adapter Migratable, migrationsPath string) (*Migrator, error) {
-	return NewMigratorWithLogger(db, adapter, migrationsPath, log.New(os.Stderr, "[gomigrate] ", log.LstdFlags))
+func NewMigrator(db *sql.DB, adapter Migratable, migrationsFS fs.FS) (*Migrator, error) {
+	return NewMigratorWithLogger(db, adapter, migrationsFS, log.New(os.Stderr, "[gomigrate] ", log.LstdFlags))
 }
 
 // Returns a new migrator with the specified logger.
-func NewMigratorWithLogger(db *sql.DB, adapter Migratable, migrationsPath string, logger Logger) (*Migrator, error) {
-	// Normalize the migrations path.
-	path := []byte(migrationsPath)
-	pathLength := len(path)
-	if path[pathLength-1] != '/' {
-		path = append(path, '/')
-	}
-
-	logger.Printf("Migrations path: %s", path)
-
+func NewMigratorWithLogger(db *sql.DB, adapter Migratable, migrationsFS fs.FS, logger Logger) (*Migrator, error) {
 	migrator := Migrator{
 		db,
-		string(path),
+		migrationsFS,
 		adapter,
 		make(map[uint64]*Migration),
 		logger,
@@ -120,15 +110,16 @@ func NewMigratorWithLogger(db *sql.DB, adapter Migratable, migrationsPath string
 
 // Populates a migrator with a sorted list of migrations from the file system.
 func (m *Migrator) fetchMigrations() error {
-	pathGlob := append([]byte(m.MigrationsPath), []byte("*")...)
-
-	matches, err := filepath.Glob(string(pathGlob))
+	matches, err := fs.ReadDir(m.fs, ".")
 	if err != nil {
 		m.logger.Fatalf("Error while globbing migrations: %v", err)
 	}
 
 	for _, match := range matches {
-		num, migrationType, name, err := parseMigrationPath(match)
+		if match.IsDir() {
+			continue
+		}
+		num, migrationType, name, err := parseMigrationPath(match.Name())
 		if err != nil {
 			m.logger.Printf("Invalid migration file found: %s", match)
 			continue
@@ -142,9 +133,9 @@ func (m *Migrator) fetchMigrations() error {
 			m.migrations[num] = migration
 		}
 		if migrationType == upMigration {
-			migration.UpPath = match
+			migration.UpPath = match.Name()
 		} else {
-			migration.DownPath = match
+			migration.DownPath = match.Name()
 		}
 	}
 
@@ -222,7 +213,7 @@ func (m *Migrator) ApplyMigration(migration *Migration, mType migrationType) err
 
 	m.logger.Printf("Applying migration: %s", path)
 
-	sql, err := ioutil.ReadFile(path)
+	sql, err := fs.ReadFile(m.fs, path)
 	if err != nil {
 		m.logger.Printf("Error reading migration: %s", path)
 		return err

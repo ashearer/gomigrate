@@ -20,7 +20,7 @@ var (
 
 func GetMigrator(test string) *Migrator {
 	path := fmt.Sprintf("test_migrations/%s_%s", test, dbType)
-	m, err := NewMigrator(db, adapter, path)
+	m, err := NewMigrator(db, adapter, os.DirFS(path))
 	if err != nil {
 		panic(err)
 	}
